@@ -18,7 +18,7 @@ if not API_KEY:
 
 # Gemini 설정 (가성비 Flash 모델 사용)
 genai.configure(api_key=API_KEY)
-MODEL_NAME = 'gemini-1.5-flash' # 비용 절약을 위해 Flash 추천
+MODEL_NAME = 'model/gemini-2.5-flash' # 비용 절약을 위해 Flash 추천
 
 # --- 🤖 텔레그램 전송 함수 ---
 def send_telegram(message):
