@@ -117,6 +117,18 @@ def fetch_board_items(env_name: str) -> str:
 
     return json.dumps(all_items, ensure_ascii=False)
 
+@mcp.tool()
+def debug_site(url: str) -> str:
+    """해당 URL에 접속해서 상태 코드와 HTML 앞부분 500자를 보여줍니다."""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        resp = requests.get(url, headers=headers, timeout=10)
+        return f"상태코드: {resp.status_code}\n내용일부:\n{resp.text[:500]}"
+    except Exception as e:
+        return f"접속 에러: {e}"
+        
 # 🌟 [신규] 상세 페이지 내용 긁어오기 도구
 @mcp.tool()
 def fetch_post_detail(url: str, content_selector: str) -> str:
@@ -146,14 +158,3 @@ def fetch_post_detail(url: str, content_selector: str) -> str:
 if __name__ == "__main__":
     mcp.run()
 
-@mcp.tool()
-def debug_site(url: str) -> str:
-    """해당 URL에 접속해서 상태 코드와 HTML 앞부분 500자를 보여줍니다."""
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-        resp = requests.get(url, headers=headers, timeout=10)
-        return f"상태코드: {resp.status_code}\n내용일부:\n{resp.text[:500]}"
-    except Exception as e:
-        return f"접속 에러: {e}"
