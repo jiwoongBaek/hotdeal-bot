@@ -7,6 +7,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 import google.generativeai as genai
 from google.generativeai.types import Tool, FunctionDeclaration
+from datetime import datetime
 
 # --- 🔐 1. 보안 설정 (환경 변수에서 로드) ---
 API_KEY = os.getenv("GEMINI_API_KEY")
@@ -81,7 +82,7 @@ async def main():
 
             print("\n✅ 시스템 준비 완료!")
             print("💡 사용법:")
-            print("  1. 설정: '핫딜 환경 만들어줘', '펨코 사이트 추가해줘'")
+            print("  1. 설정: '핫딜 환경 만들어줘', '뽐뿌 사이트 추가해줘'")
             print("  2. 감시: monitor [환경] [키워드] [최소댓글] [초]")
             print("     예) monitor 핫딜 햇반 10 60")
             print("     예) monitor 핫딜 all 15 30 (키워드 없이 댓글 15개 이상만)")
@@ -101,16 +102,23 @@ async def main():
                 if user_input.startswith("monitor"):
                     try:
                         parts = user_input.split()
+                        if len(parts) < 5:
+                            print("⚠️ 사용법: monitor [환경] [키워드] [최소댓글] [초]")
+                            continue
                         env_name = parts[1]
                         keyword = parts[2]
                         min_comments = int(parts[3])
                         interval = int(parts[4])
-                        
-                        print(f"🕵️‍♂️ [AI 감시 모드] 키워드: '{keyword}' OR 댓글: {min_comments}개+ (판독 후 알림)")
+                    except (IndexError, ValueError):
+                        print("⚠️ 입력 오류: monitor [환경] [키워드] [최소댓글] [초]")
+                        continue
+
+                    try:
+                        print(f"🕵️‍♂️ [AI 감시] 오늘 올라온 글 중 '{keyword}' OR 댓글 {min_comments}개 이상 (댓글 여론 분석)")
                         seen_links = set()
 
                         while True:
-                            print(f"\n⏰ 스캔 중...")
+                            print(f"\n⏰ 스캔 중... ({time.strftime('%H:%M:%S')})")
                             result = await session.call_tool("fetch_board_items", arguments={"env_name": env_name})
                             try:
                                 items = json.loads(result.content[0].text)
@@ -121,43 +129,59 @@ async def main():
                             if isinstance(items, dict) and "error" in items:
                                 print(f"❌ {items['error']}")
                                 break
+                            
+                            # 오늘 날짜 구하기 (MM/DD 또는 MM-DD 형식 매칭용)
+                            today_str = datetime.now().strftime("%m/%d") # 예: 11/26
+                            today_str_2 = datetime.now().strftime("%m-%d")
 
                             for item in items:
                                 title = item.get("title", "")
                                 link = item.get("link", "")
                                 comments = item.get("comments", 0)
                                 site = item.get("site", "")
-                                content_sel = item.get("content_selector", "") # 본문 선택자
+                                date_text = item.get("date_text", "") # 가져온 날짜
+                                content_sel = item.get("content_selector", "") # 댓글 선택자
                                 
                                 if link in seen_links: continue
 
-                                # 1차 필터: 키워드나 댓글 수 통과
+                                # 1. 📅 [날짜 필터] 오늘 올라온 글인가?
+                                # 보통 오늘 글은 시간(14:30)으로 표시되거나, 오늘 날짜(11/26)가 적혀있음
+                                is_today = False
+                                if ":" in date_text: # 시간이 있으면 오늘임
+                                    is_today = True
+                                elif today_str in date_text or today_str_2 in date_text:
+                                    is_today = True
+                                
+                                # 날짜 정보가 없으면(못 찾았으면) 일단 통과시킴 (놓치는 것보단 나으니)
+                                if not date_text: is_today = True 
+
+                                if not is_today:
+                                    continue # 오늘 글 아니면 패스
+
+                                # 2. [조건 필터] 키워드 or 댓글 수
                                 is_candidate = False
                                 if keyword != "all" and keyword in title: is_candidate = True
                                 if comments >= min_comments: is_candidate = True
 
                                 if is_candidate:
-                                    print(f"  🔍 [1차 통과] {title} ({comments}플) -> AI 분석 시작...")
+                                    print(f"  🔍 [1차 통과] {title} ({comments}플/날짜:{date_text}) -> 댓글 여론 분석 중...")
                                     
-                                    # 2차 필터: AI 상세 분석 (fetch_post_detail 호출)
+                                    # 3. [AI 분석] 댓글 긁어와서 분석
                                     detail_res = await session.call_tool("fetch_post_detail", arguments={"url": link, "content_selector": content_sel})
-                                    post_body = detail_res.content[0].text
+                                    comments_body = detail_res.content[0].text
 
-                                    # Gemini에게 판결 요청 (Structured Prompting)
                                     prompt = f"""
-                                    너는 핫딜 판독기야. 아래 게시글 내용을 보고 '살 만한 핫딜(POSITIVE)'인지 '별로인 딜/품절/바이럴(NEGATIVE)'인지 판단해줘.
+                                    너는 핫딜 판독기야. 아래는 게시글에 달린 '댓글들'이다.
+                                    댓글 반응을 보고 진짜 살 만한 핫딜인지 판단해줘.
                                     
                                     [판단 기준]
-                                    1. 긍정적: "가격 좋다", "탑승", "역대가", "감사합니다" 등의 반응이나 싼 가격.
-                                    2. 부정적: "비싸다", "품절", "종료", "바이럴", "별로다" 등의 반응.
-                                    3. 제목에 '{keyword}'가 있다면 가산점.
+                                    - POSITIVE: "가격 좋다", "샀다", "고맙다", "역대가" 등 긍정적 반응 다수.
+                                    - NEGATIVE: "비싸다", "별로다", "품절", "바이럴", "망했다" 등 부정적 반응 다수.
                                     
-                                    [게시글 내용]
-                                    제목: {title}
-                                    본문내용: {post_body}
+                                    [댓글 내용]
+                                    {comments_body}
                                     
-                                    답변은 오직 다음 JSON 형식으로만 줘:
-                                    {{"judgment": "POSITIVE" 또는 "NEGATIVE", "reason": "한 줄 요약"}}
+                                    답변은 오직 JSON으로: {{"judgment": "POSITIVE/NEGATIVE", "reason": "한 줄 요약"}}
                                     """
                                     
                                     try:
@@ -165,17 +189,17 @@ async def main():
                                         ai_text = ai_resp.text.replace("```json", "").replace("```", "").strip()
                                         analysis = json.loads(ai_text)
                                         
+                                        # 텔레그램 메시지에 댓글 수(comments) 포함
                                         if analysis["judgment"] == "POSITIVE":
-                                            msg = f"🔥 [AI 추천 핫딜]\n사이트: {site}\n제목: {title}\n이유: {analysis['reason']}\n링크: {link}"
-                                            print(f"  ✅ [합격] 알림 전송!")
+                                            msg = f"🔥 [핫딜/💬{comments}개]\n사이트: {site}\n제목: {title}\n반응: {analysis['reason']}\n링크: {link}"
+                                            print(f"  ✅ [알림 전송] {title}")
                                             send_telegram(msg)
                                         else:
                                             print(f"  ⛔ [탈락] {analysis['reason']}")
 
                                     except Exception as e:
-                                        print(f"  ⚠️ AI 분석 에러: {e}")
-                                        # 에러나면 안전하게 그냥 알림 보냄 (놓치는 것보단 나으니)
-                                        send_telegram(f"⚠️ [분석실패/핫딜추정] {title}\n{link}")
+                                        print(f"  ⚠️ 분석 에러(일단 전송): {e}")
+                                        send_telegram(f"⚠️ [분석실패/💬{comments}개] {title}\n{link}")
 
                                     seen_links.add(link)
 

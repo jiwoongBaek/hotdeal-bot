@@ -1,4 +1,4 @@
-# server.py (최종_진짜_최종_v2.py)
+# server.py (날짜 필터링 + 댓글 분석 버전)
 from mcp.server.fastmcp import FastMCP
 import sqlite3
 import requests
@@ -17,7 +17,7 @@ def init_db():
     conn.execute('''
         CREATE TABLE IF NOT EXISTS environments (name TEXT PRIMARY KEY, description TEXT)
     ''')
-    # 🌟 content_selector 컬럼 추가됨 (본문 긁어오기용)
+    # 🌟 date_selector 컬럼 추가 (날짜 필터링용)
     conn.execute('''
         CREATE TABLE IF NOT EXISTS sites (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,7 +27,8 @@ def init_db():
             title_selector TEXT,
             comment_selector TEXT,
             link_selector TEXT,
-            content_selector TEXT, 
+            content_selector TEXT, -- 이제부터 이건 '댓글 영역'을 긁는 용도로 씁니다
+            date_selector TEXT,    -- [신규] 리스트에서 날짜/시간 위치
             FOREIGN KEY(env_name) REFERENCES environments(name)
         )
     ''')
@@ -37,7 +38,6 @@ def init_db():
 init_db()
 
 # --- ⚙️ 설정 도구 ---
-
 @mcp.tool()
 def create_environment(name: str, description: str = "") -> str:
     conn = sqlite3.connect(DB_PATH)
@@ -50,15 +50,14 @@ def create_environment(name: str, description: str = "") -> str:
     finally:
         conn.close()
 
-# 🌟 content_selector 인자 추가
 @mcp.tool()
-def add_board_to_env(env_name: str, site_name: str, board_url: str, title_selector: str, comment_selector: str, content_selector: str, link_selector: str = "") -> str:
-    """사이트 추가 (본문 선택자 포함)"""
+def add_board_to_env(env_name: str, site_name: str, board_url: str, title_selector: str, comment_selector: str, content_selector: str, date_selector: str, link_selector: str = "") -> str:
+    """사이트 추가 (날짜 선택자 포함)"""
     conn = sqlite3.connect(DB_PATH)
     try:
         conn.execute(
-            "INSERT INTO sites (env_name, site_name, board_url, title_selector, comment_selector, link_selector, content_selector) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (env_name, site_name, board_url, title_selector, comment_selector, link_selector, content_selector)
+            "INSERT INTO sites (env_name, site_name, board_url, title_selector, comment_selector, link_selector, content_selector, date_selector) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (env_name, site_name, board_url, title_selector, comment_selector, link_selector, content_selector, date_selector)
         )
         conn.commit()
         return f"✅ 사이트 추가 완료: {site_name}"
@@ -68,38 +67,35 @@ def add_board_to_env(env_name: str, site_name: str, board_url: str, title_select
         conn.close()
 
 # --- 🔍 수집 도구 ---
-
 @mcp.tool()
 def fetch_board_items(env_name: str) -> str:
-    """게시판 데이터를 수집합니다. (Print문 제거 버전)"""
+    """리스트 수집 (날짜 정보 포함)"""
     conn = sqlite3.connect(DB_PATH)
-    sites = conn.execute("SELECT site_name, board_url, title_selector, comment_selector, link_selector, content_selector FROM sites WHERE env_name = ?", (env_name,)).fetchall()
+    sites = conn.execute("SELECT site_name, board_url, title_selector, comment_selector, link_selector, content_selector, date_selector FROM sites WHERE env_name = ?", (env_name,)).fetchall()
     conn.close()
 
     if not sites: return json.dumps({"error": "등록된 사이트 없음"})
 
     all_items = []
-    # 뽐뿌 뚫는 강력한 헤더
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Referer': 'https://www.google.com/'
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
     }
 
-    for site_name, url, t_sel, c_sel, l_sel, cont_sel in sites:
+    for site_name, url, t_sel, c_sel, l_sel, cont_sel, d_sel in sites:
         try:
             resp = requests.get(url, headers=headers, timeout=10)
-            resp.encoding = resp.apparent_encoding 
+            resp.encoding = resp.apparent_encoding
             soup = BeautifulSoup(resp.text, 'html.parser')
-            
             titles = soup.select(t_sel)
             
-            for t_el in titles[:15]:
+            for t_el in titles[:20]:
                 item = {
                     "site": site_name, 
                     "title": t_el.get_text(strip=True), 
                     "comments": 0, 
                     "link": "",
+                    "date_text": "", # [신규] 날짜 텍스트
                     "content_selector": cont_sel
                 }
                 
@@ -110,61 +106,43 @@ def fetch_board_items(env_name: str) -> str:
 
                 # 댓글 수 찾기
                 if c_sel:
-                    c_tag = t_el.select_one(c_sel)
-                    if not c_tag and t_el.parent:
-                         c_tag = t_el.parent.select_one(c_sel)
-                    
+                    c_tag = t_el.select_one(c_sel) or (t_el.parent.select_one(c_sel) if t_el.parent else None)
                     if c_tag:
                         nums = re.findall(r'\d+', c_tag.get_text())
-                        if nums: 
-                            item["comments"] = int(nums[0])
+                        if nums: item["comments"] = int(nums[0])
+
+                # [신규] 날짜 찾기
+                if d_sel:
+                    d_tag = t_el.select_one(d_sel) or (t_el.parent.select_one(d_sel) if t_el.parent else None)
+                    if d_tag:
+                        item["date_text"] = d_tag.get_text(strip=True)
 
                 all_items.append(item)
-
         except Exception as e:
-            # 에러가 나도 print 하지 말고 결과에 담아서 보냄
-            all_items.append({"error": f"{site_name} 에러: {str(e)}"})
+            all_items.append({"error": f"{site_name} 에러: {e}"})
 
     return json.dumps(all_items, ensure_ascii=False)
 
 @mcp.tool()
-def debug_site(url: str) -> str:
-    """해당 URL에 접속해서 상태 코드와 HTML 앞부분 500자를 보여줍니다."""
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-        resp = requests.get(url, headers=headers, timeout=10)
-        return f"상태코드: {resp.status_code}\n내용일부:\n{resp.text[:500]}"
-    except Exception as e:
-        return f"접속 에러: {e}"
-        
-# 🌟 [신규] 상세 페이지 내용 긁어오기 도구
-@mcp.tool()
 def fetch_post_detail(url: str, content_selector: str) -> str:
-    """게시글 링크로 들어가서 본문 내용을 가져옵니다."""
+    """게시글 링크로 들어가서 내용(이제는 댓글들)을 가져옵니다."""
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
-        }
+        headers = {'User-Agent': 'Mozilla/5.0'}
         resp = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # 본문 추출
+        # 댓글 내용 추출
         content = ""
         if content_selector:
+            # 댓글들은 여러 개가 있으니 모두 긁어서 합침
             elements = soup.select(content_selector)
-            content = "\n".join([el.get_text(strip=True) for el in elements])
+            content = "\n".join([f"- {el.get_text(strip=True)}" for el in elements])
         
-        # 선택자가 없거나 실패하면 대충 body에서 긁어오기 (길이 제한)
-        if not content:
-            content = soup.get_text(strip=True)[:1000]
+        if not content: return "댓글을 찾을 수 없습니다."
             
-        return content[:2000] # 너무 길면 Gemini가 힘들어하니 2000자 제한
+        return content[:3000] # 댓글은 길어질 수 있으니 3000자 제한
     except Exception as e:
-        return f"본문 수집 실패: {e}"
+        return f"수집 실패: {e}"
 
 if __name__ == "__main__":
     mcp.run()
-
