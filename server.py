@@ -30,7 +30,7 @@ def sync_portfolio_prices(sheet_name: str) -> str:
         
         # 1. 전체 데이터 한 번에 가져오기 (API Call 1)
         all_values = ws.get_all_values()
-        
+         
         if not all_values:
             return "❌ 시트가 비어있습니다."
 
