@@ -1,148 +1,133 @@
-# server.py (날짜 필터링 + 댓글 분석 버전)
 from mcp.server.fastmcp import FastMCP
-import sqlite3
-import requests
-from bs4 import BeautifulSoup
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+import yfinance as yf
+from youtube_transcript_api import YouTubeTranscriptApi
 import json
-import os
-import re
-from urllib.parse import urljoin
 
-DB_PATH = "/data/config.db"
-mcp = FastMCP("OmniAnalyst")
+mcp = FastMCP("WealthArchitect")
 
-def init_db():
-    os.makedirs("/data", exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS environments (name TEXT PRIMARY KEY, description TEXT)
-    ''')
-    # 🌟 date_selector 컬럼 추가 (날짜 필터링용)
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS sites (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            env_name TEXT,
-            site_name TEXT,
-            board_url TEXT,
-            title_selector TEXT,
-            comment_selector TEXT,
-            link_selector TEXT,
-            content_selector TEXT, -- 이제부터 이건 '댓글 영역'을 긁는 용도로 씁니다
-            date_selector TEXT,    -- [신규] 리스트에서 날짜/시간 위치
-            FOREIGN KEY(env_name) REFERENCES environments(name)
-        )
-    ''')
-    conn.commit()
-    conn.close()
+# 구글 시트 인증 설정
+SCOPE = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+KEY_FILE = "/app/service_account.json" # 도커 내부 경로
 
-init_db()
+def get_sheet_client():
+    creds = ServiceAccountCredentials.from_json_keyfile_name(KEY_FILE, SCOPE)
+    return gspread.authorize(creds)
 
-# --- ⚙️ 설정 도구 ---
+# --- 📊 1. 포트폴리오 관리 도구 (배치 업데이트 적용) ---
+
 @mcp.tool()
-def create_environment(name: str, description: str = "") -> str:
-    conn = sqlite3.connect(DB_PATH)
+def sync_portfolio_prices(sheet_name: str) -> str:
+    """
+    구글 시트의 데이터를 한 번에 가져와서 메모리에서 계산 후 한 번에 업데이트합니다.
+    (API 호출 최소화로 에러 방지)
+    """
     try:
-        conn.execute("INSERT INTO environments VALUES (?, ?)", (name, description))
-        conn.commit()
-        return f"✅ 환경 생성: {name}"
-    except:
-        return "⚠️ 이미 존재함"
-    finally:
-        conn.close()
+        client = get_sheet_client()
+        sh = client.open(sheet_name)
+        ws = sh.get_worksheet(0) # 첫 번째 시트
+        
+        # 1. 전체 데이터 한 번에 가져오기 (API Call 1)
+        all_values = ws.get_all_values()
+        
+        if not all_values:
+            return "❌ 시트가 비어있습니다."
 
-@mcp.tool()
-def add_board_to_env(env_name: str, site_name: str, board_url: str, title_selector: str, comment_selector: str, content_selector: str, date_selector: str, link_selector: str = "") -> str:
-    """사이트 추가 (날짜 선택자 포함)"""
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        conn.execute(
-            "INSERT INTO sites (env_name, site_name, board_url, title_selector, comment_selector, link_selector, content_selector, date_selector) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (env_name, site_name, board_url, title_selector, comment_selector, link_selector, content_selector, date_selector)
-        )
-        conn.commit()
-        return f"✅ 사이트 추가 완료: {site_name}"
-    except Exception as e:
-        return f"❌ 실패: {e}"
-    finally:
-        conn.close()
+        header = all_values[0]
+        rows = all_values[1:]
+        
+        updated_rows = []
+        total_balance = 0
+        
+        # 2. 메모리에서 계산 (통신 X)
+        for row in rows:
+            # 빈 행이 있거나 길이가 짧으면 패스
+            if not row or len(row) < 5:
+                updated_rows.append(row)
+                continue
 
-# --- 🔍 수집 도구 ---
-@mcp.tool()
-def fetch_board_items(env_name: str) -> str:
-    """리스트 수집 (날짜 정보 포함)"""
-    conn = sqlite3.connect(DB_PATH)
-    sites = conn.execute("SELECT site_name, board_url, title_selector, comment_selector, link_selector, content_selector, date_selector FROM sites WHERE env_name = ?", (env_name,)).fetchall()
-    conn.close()
-
-    if not sites: return json.dumps({"error": "등록된 사이트 없음"})
-
-    all_items = []
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
-    }
-
-    for site_name, url, t_sel, c_sel, l_sel, cont_sel, d_sel in sites:
-        try:
-            resp = requests.get(url, headers=headers, timeout=10)
-            resp.encoding = resp.apparent_encoding
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            titles = soup.select(t_sel)
-            
-            for t_el in titles[:20]:
-                item = {
-                    "site": site_name, 
-                    "title": t_el.get_text(strip=True), 
-                    "comments": 0, 
-                    "link": "",
-                    "date_text": "", # [신규] 날짜 텍스트
-                    "content_selector": cont_sel
-                }
+            # 데이터 파싱 (콤마 제거 등 안전장치)
+            ticker = row[2].strip()
+            try:
+                qty_str = row[3].replace(',', '').strip()
+                qty = float(qty_str) if qty_str else 0
                 
-                # 링크 찾기
-                a_tag = t_el if t_el.name == 'a' else (t_el.select_one(l_sel) if l_sel else t_el.find_parent('a'))
-                if a_tag and a_tag.has_attr('href'):
-                    item["link"] = urljoin(url, a_tag['href'])
+                avg_str = row[4].replace(',', '').strip()
+                avg_price = float(avg_str) if avg_str else 0
+            except:
+                qty, avg_price = 0, 0
 
-                # 댓글 수 찾기
-                if c_sel:
-                    c_tag = t_el.select_one(c_sel) or (t_el.parent.select_one(c_sel) if t_el.parent else None)
-                    if c_tag:
-                        nums = re.findall(r'\d+', c_tag.get_text())
-                        if nums: item["comments"] = int(nums[0])
+            current_price = avg_price # 기본값 (조회 실패 시 평단가 유지)
 
-                # [신규] 날짜 찾기
-                if d_sel:
-                    d_tag = t_el.select_one(d_sel) or (t_el.parent.select_one(d_sel) if t_el.parent else None)
-                    if d_tag:
-                        item["date_text"] = d_tag.get_text(strip=True)
+            # 주가 조회 (API Call - yfinance는 별도 제한이 널널함)
+            if ticker and ticker != '-' and ('.KS' in ticker or len(ticker) < 5):
+                try:
+                    stock = yf.Ticker(ticker)
+                    # fast_info가 빠름. 실패하면 history로 우회
+                    current_price = stock.fast_info['last_price']
+                except:
+                    pass 
+            
+            # 펀드인 경우 현재가를 평단가와 같다고 가정 (자동조회 불가 영역)
+            if ticker == '-':
+                current_price = avg_price
 
-                all_items.append(item)
-        except Exception as e:
-            all_items.append({"error": f"{site_name} 에러: {e}"})
+            # 수익률 및 평가금액 계산
+            profit_rate = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
+            
+            # 평가금액 계산 (펀드인지 확인)
+            is_fund = 'Fund' in row[5] or '펀드' in row[5]
+            if is_fund:
+                valuation = (qty / 1000) * current_price # 펀드는 1000좌당 가격
+            else:
+                valuation = qty * current_price
 
-    return json.dumps(all_items, ensure_ascii=False)
+            total_balance += valuation
+
+            # 3. 행 데이터 업데이트 (E, F, G열 수정)
+            # row 리스트의 값을 직접 수정
+            # 만약 row 길이가 짧으면 늘려줌
+            while len(row) < 8:
+                row.append("")
+            
+            row[4] = int(current_price) # E열: 현재가 (정수)
+            row[5] = f"{profit_rate:.2f}%" # F열: 수익률
+            row[6] = int(valuation) # G열: 평가금액
+            
+            updated_rows.append(row)
+
+        # 4. 전체 데이터 한 번에 쓰기 (API Call 2)
+        # 헤더 + 수정된 행들 합치기
+        final_data = [header] + updated_rows
+        ws.update(range_name='A1', values=final_data)
+
+        return f"✅ 포트폴리오 업데이트 완료! 총 평가금액: {int(total_balance):,}원"
+
+    except Exception as e:
+        return f"❌ 시트 업데이트 실패: {e}"
 
 @mcp.tool()
-def fetch_post_detail(url: str, content_selector: str) -> str:
-    """게시글 링크로 들어가서 내용(이제는 댓글들)을 가져옵니다."""
+def get_portfolio_summary(sheet_name: str) -> str:
+    """구글 시트 데이터를 JSON으로 가져옵니다."""
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        resp = requests.get(url, headers=headers, timeout=5)
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        
-        # 댓글 내용 추출
-        content = ""
-        if content_selector:
-            # 댓글들은 여러 개가 있으니 모두 긁어서 합침
-            elements = soup.select(content_selector)
-            content = "\n".join([f"- {el.get_text(strip=True)}" for el in elements])
-        
-        if not content: return "댓글을 찾을 수 없습니다."
-            
-        return content[:3000] # 댓글은 길어질 수 있으니 3000자 제한
+        client = get_sheet_client()
+        sh = client.open(sheet_name)
+        ws = sh.get_worksheet(0)
+        return json.dumps(ws.get_all_records(), ensure_ascii=False)
     except Exception as e:
-        return f"수집 실패: {e}"
+        return f"데이터 읽기 실패: {e}"
+
+@mcp.tool()
+def get_youtube_transcript(video_url: str) -> str:
+    """유튜브 자막 수집"""
+    try:
+        video_id = video_url.split("v=")[-1].split("&")[0]
+        transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko'])
+        text = " ".join([t['text'] for t in transcript])
+        return text[:15000]
+    except Exception as e:
+        return f"자막 실패: {e}"
 
 if __name__ == "__main__":
     mcp.run()
