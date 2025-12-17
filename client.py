@@ -18,29 +18,19 @@ if not API_KEY:
     print("❌ 경고: GEMINI_API_KEY가 없습니다.")
 
 genai.configure(api_key=API_KEY)
-MODEL_NAME = 'models/gemini-2.5-flash' # 가성비 모델
+MODEL_NAME = 'models/gemini-2.5-flash' 
 
-# --- 🤖 텔레그램 함수 ---
 def send_telegram(message):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("⚠️ 텔레그램 설정이 없습니다. (콘솔 출력만 함)")
-        return
+    if not TELEGRAM_TOKEN or not CHAT_ID: return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     data = {"chat_id": CHAT_ID, "text": message}
-    try:
-        requests.post(url, data=data, timeout=5)
-    except Exception as e:
-        print(f"텔레그램 전송 실패: {e}")
+    try: requests.post(url, data=data, timeout=5)
+    except: pass
 
-# --- 🚀 메인 로직 ---
 async def main():
     server_params = StdioServerParameters(
         command="docker",
-        args=[
-            "run", "-i", "--rm", 
-            "-v", f"{os.getcwd()}/data:/data", 
-            "mcp-hotdeal"
-        ],
+        args=["run", "-i", "--rm", "-v", f"{os.getcwd()}/data:/data", "mcp-hotdeal"],
         env=None
     )
 
@@ -50,7 +40,6 @@ async def main():
         async with ClientSession(read, write) as session:
             await session.initialize()
             
-            # 도구 정의 (Gemini용)
             tools_list = await session.list_tools()
             gemini_tools = []
             for tool in tools_list.tools:
@@ -63,29 +52,33 @@ async def main():
             model = genai.GenerativeModel(model_name=MODEL_NAME, tools=gemini_tools)
             chat = model.start_chat(enable_automatic_function_calling=False)
 
-            print("\n✅ 시스템 준비 완료! (monitor 명령어 사용 가능)")
-            print("예) monitor 핫딜 햇반 10 60")
+            print("\n✅ 준비 완료! 이제 'monitor' 뒤에 환경 이름 없이 바로 입력하세요.")
+            print("예) monitor all 5 60  (키워드 'all', 댓글 5개 이상, 60초 간격)")
 
             while True:
                 user_input = input("🗣️ 나: ")
                 if user_input.lower() in ['q', 'exit']: break
                 if not user_input.strip(): continue
 
-                # 🚨 [스마트 감시 모드]
                 if user_input.startswith("monitor"):
                     try:
                         parts = user_input.split()
-                        env_name = parts[1]
-                        keyword = parts[2]
-                        min_comments = int(parts[3])
-                        interval = int(parts[4])
+                        # [변경점] parts[1]이 바로 키워드가 됩니다. (환경 이름 삭제)
+                        if len(parts) < 4:
+                            print("⚠️ 형식: monitor [키워드] [댓글수] [초단위간격]")
+                            continue
+                            
+                        keyword = parts[1]
+                        min_comments = int(parts[2])
+                        interval = int(parts[3])
                         
                         print(f"🕵️‍♂️ [AI 감시] '{keyword}' OR 댓글 {min_comments}개+ (오늘 게시글만)")
                         seen_links = set()
 
                         while True:
                             print(f"\n⏰ 스캔 중... ({time.strftime('%H:%M:%S')})")
-                            res = await session.call_tool("fetch_board_items", arguments={"env_name": env_name})
+                            # fetch_board_items 호출 시 env_name은 더미값('algumon') 전달
+                            res = await session.call_tool("fetch_board_items", arguments={"env_name": "algumon"})
                             try:
                                 items = json.loads(res.content[0].text)
                             except:
@@ -94,7 +87,6 @@ async def main():
                             if isinstance(items, dict) and "error" in items:
                                 print(f"❌ {items['error']}"); break
 
-                            # 오늘 날짜 문자열 (예: 12/17)
                             today_str = datetime.now().strftime("%m/%d")
 
                             for item in items:
@@ -107,18 +99,15 @@ async def main():
                                 
                                 if link in seen_links: continue
 
-                                # 1. 📅 날짜 필터 (알구몬 '방금', '분 전' 등 지원)
+                                # 날짜 필터
                                 is_today = False
-                                if any(x in date_text for x in ["방금", "분 전", "시간 전", "초 전"]):
-                                    is_today = True
-                                elif ":" in date_text or today_str in date_text:
-                                    is_today = True
-                                elif not date_text: 
-                                    is_today = True # 날짜 없으면 안전하게 통과
+                                if any(x in date_text for x in ["방금", "분", "시간", "초"]): is_today = True
+                                elif ":" in date_text or today_str in date_text: is_today = True
+                                elif not date_text: is_today = True
 
                                 if not is_today: continue 
 
-                                # 2. 조건 필터
+                                # 조건 필터
                                 is_hit = False
                                 if keyword != "all" and keyword in title: is_hit = True
                                 if comments >= min_comments: is_hit = True
@@ -126,34 +115,40 @@ async def main():
                                 if is_hit:
                                     print(f"  🔍 분석 중: {title} (💬{comments}/📅{date_text})")
                                     
-                                    # 3. AI 댓글 여론 분석
+                                    # 상세 분석
                                     detail = await session.call_tool("fetch_post_detail", arguments={"url": link, "content_selector": content_sel})
                                     comments_body = detail.content[0].text
 
                                     prompt = f"""
-                                    너는 핫딜 판독기야. 아래 댓글들을 보고 살 만한 딜인지 판단해.
-                                    [댓글들]
+                                    너는 핫딜 판독기야. 아래 내용을 보고 살 만한 딜인지 판단해.
+                                    댓글이 없으면 '판단불가'라고 해.
+
+                                    [수집된 내용]
                                     {comments_body}
                                     
                                     [판단기준]
-                                    - POSITIVE: 가격 저렴, 구매 완료, 칭찬 등
-                                    - NEGATIVE: 비쌈, 품절, 별로임, 바이럴 등
+                                    - POSITIVE: 가격 저렴, 구매 완료, 칭찬, '탑승' 등 긍정적 반응
+                                    - NEGATIVE: 비쌈, 품절, 별로임, 바이럴 등 부정적 반응
+                                    - UNKNOWN: 댓글이나 정보가 부족함
                                     
-                                    답변(JSON): {{"judgment": "POSITIVE/NEGATIVE", "reason": "한줄요약"}}
+                                    답변(JSON): {{"judgment": "POSITIVE/NEGATIVE/UNKNOWN", "reason": "한줄요약"}}
                                     """
                                     
                                     try:
                                         ai_res = chat.send_message(prompt)
-                                        ai_json = json.loads(ai_res.text.replace("```json","").replace("```","").strip())
+                                        # JSON 파싱 강화
+                                        raw_json = ai_res.text.replace("```json","").replace("```","").strip()
+                                        ai_json = json.loads(raw_json)
                                         
                                         if ai_json["judgment"] == "POSITIVE":
-                                            msg = f"🔥 [핫딜/💬{comments}개]\n사이트: {site}\n제목: {title}\n반응: {ai_json['reason']}\n링크: {link}"
+                                            msg = f"🔥 [핫딜/💬{comments}개]\n제목: {title}\n반응: {ai_json['reason']}\n링크: {link}"
                                             send_telegram(msg)
                                             print("  ✅ 알림 전송!")
+                                        elif ai_json["judgment"] == "UNKNOWN":
+                                            print(f"  ❓ 판단 보류: {ai_json['reason']}")
                                         else:
                                             print(f"  ⛔ 탈락: {ai_json['reason']}")
                                     except:
-                                        # JSON 파싱 실패해도 알림은 일단 보냄
                                         send_telegram(f"⚠️ [분석실패/💬{comments}] {title}\n{link}")
 
                                     seen_links.add(link)
@@ -164,21 +159,10 @@ async def main():
                     except Exception as e:
                         print(f"⚠️ 에러: {e}"); continue
 
-                # 일반 대화 처리
                 try:
                     resp = chat.send_message(user_input)
-                    part = resp.candidates[0].content.parts[0]
-                    if part.function_call:
-                        fc = part.function_call
-                        res = await session.call_tool(fc.name, arguments=dict(fc.args))
-                        from google.ai.generativelanguage_v1beta.types import content
-                        f_resp = content.Part(function_response=content.FunctionResponse(name=fc.name, response={"result": res.content[0].text}))
-                        final = chat.send_message([f_resp])
-                        print(f"🤖: {final.text}")
-                    else:
-                        print(f"🤖: {part.text}")
-                except Exception as e:
-                    print(f"❌ 대화 에러: {e}")
+                    print(f"🤖: {resp.text}")
+                except: pass
 
 if __name__ == "__main__":
     try: asyncio.run(main())
