@@ -6,13 +6,13 @@ import re
 from urllib.parse import urljoin
 from datetime import datetime
 
-# 알구몬 주소
 ALGUMON_URL = "https://algumon.com"
 mcp = FastMCP("OmniAnalyst")
 
 @mcp.tool()
 def fetch_board_items(env_name: str) -> str:
-    print(f"🔍 [알구몬] 1페이지 스캔 시작...")
+    """알구몬 리스트 수집"""
+    print(f"🔍 [알구몬] 리스트 스캔 시작...")
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
@@ -79,18 +79,44 @@ def fetch_board_items(env_name: str) -> str:
 
 @mcp.tool()
 def fetch_post_detail(url: str, content_selector: str) -> str:
-    """사이트 내용 수집 (강력한 폴백 적용)"""
+    """리다이렉트 추적 및 본문 수집"""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Referer': 'https://algumon.com/'
         }
         
-        resp = requests.get(url, headers=headers, timeout=10)
-        final_url = resp.url
-        print(f"   👉 접속: {final_url[:40]}...")
+        session = requests.Session()
+        resp = session.get(url, headers=headers, timeout=10)
+        
+        # 🔥 [핵심] 리다이렉트 페이지 감지 ("게시글로 이동중...")
+        if "이동중" in resp.text or "redirect" in resp.url or "refresh" in resp.text.lower():
+            print("   ↪️ 대기 페이지 감지! 진짜 주소 추적 중...")
+            
+            # 1. Meta Refresh 태그에서 주소 찾기
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            meta = soup.find("meta", attrs={"http-equiv": "refresh"})
+            new_url = None
+            
+            if meta:
+                content = meta.get("content", "") # 예: "0;url=https://..."
+                match = re.search(r"url=([^;'\"]+)", content, re.IGNORECASE)
+                if match: new_url = match.group(1)
+            
+            # 2. 없다면 자바스크립트 location.href 찾기
+            if not new_url:
+                match = re.search(r"location\.href\s*=\s*['\"]([^'\"]+)['\"]", resp.text)
+                if match: new_url = match.group(1)
+                
+            # 3. 찾은 주소로 다시 접속
+            if new_url:
+                print(f"   👉 진짜 목적지 발견: {new_url[:40]}...")
+                resp = session.get(new_url, headers=headers, timeout=10)
 
-        # 인코딩 보정
+        # 최종 도착 URL 확인 및 인코딩 보정
+        final_url = resp.url
+        print(f"   ✅ 최종 접속: {final_url[:30]}...")
+        
         if "ppomppu.co.kr" in final_url:
             resp.encoding = 'cp949'
         else:
@@ -98,34 +124,29 @@ def fetch_post_detail(url: str, content_selector: str) -> str:
         
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # 1. 댓글 전용 구역 시도
+        # 댓글 찾기 시도
+        extracted_text = []
         selectors = [
-            ".han-comment", ".comment_wrapper", "#quote", ".list_comment", # 뽐뿌
-            ".comment-content", ".comment_view", ".xe_content", # 퀘이사/루리웹
-            ".reply", ".review", ".comment", ".list-group-item" 
+            ".han-comment", ".comment_wrapper", "#quote", ".list_comment", 
+            ".comment-content", ".comment_view", ".xe_content", 
+            ".reply", ".review", ".comment", ".list-group-item"
         ]
         
-        extracted_text = []
         for sel in selectors:
             found = soup.select(sel)
             if found:
                 for el in found:
                     t = el.get_text(strip=True)
-                    extracted_text.append(f"- {t}")
+                    if t: extracted_text.append(f"- {t}")
         
-        # 2. 댓글이 없으면? -> 페이지 전체 텍스트 긁어서 반환 (절대 실패 없음)
+        # 댓글 없으면 본문 전체 요약
         if not extracted_text:
-            print("   ⚠️ 댓글 선택 실패 -> 페이지 전체 텍스트 수집")
-            
-            # 스크립트 제거
+            print("   ⚠️ 댓글 영역 없음 -> 본문 전체 수집")
             for s in soup(["script", "style", "iframe", "header", "footer", "nav"]):
                 s.extract()
-                
             full_text = soup.get_text(separator="\n", strip=True)
-            # 텍스트 정리
             full_text = re.sub(r'\n+', '\n', full_text)
-            
-            return f"[전체 페이지 내용]\n{full_text[:4000]}" # 4000자 제한
+            return f"[전체 텍스트 분석]\n{full_text[:3500]}"
 
         return f"[댓글 수집 성공]\n" + "\n".join(extracted_text[:50])
 
