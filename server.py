@@ -3,16 +3,22 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import re
+import sys 
 from urllib.parse import urljoin
 from datetime import datetime
 
 ALGUMON_URL = "https://algumon.com"
 mcp = FastMCP("OmniAnalyst")
 
+# 🔍 로그 전용 함수 (통신 방해 안 함)
+def log(msg):
+    sys.stderr.write(f"{msg}\n")
+    sys.stderr.flush()
+
 @mcp.tool()
 def fetch_board_items(env_name: str) -> str:
     """알구몬 리스트 수집"""
-    print(f"🔍 [알구몬] 리스트 스캔 시작...")
+    log(f"🔍 [알구몬] 리스트 스캔 시작...")
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
@@ -71,7 +77,7 @@ def fetch_board_items(env_name: str) -> str:
                 all_items.append(item)
             except: continue
 
-        print(f"✅ 리스트 확보: {len(all_items)}개")
+        log(f"✅ 리스트 확보: {len(all_items)}개")
         return json.dumps(all_items, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": f"알구몬 접속 실패: {e}"}, ensure_ascii=False)
@@ -89,33 +95,29 @@ def fetch_post_detail(url: str, content_selector: str) -> str:
         session = requests.Session()
         resp = session.get(url, headers=headers, timeout=10)
         
-        # 🔥 [핵심] 리다이렉트 페이지 감지 ("게시글로 이동중...")
+        # 리다이렉트 감지
         if "이동중" in resp.text or "redirect" in resp.url or "refresh" in resp.text.lower():
-            print("   ↪️ 대기 페이지 감지! 진짜 주소 추적 중...")
+            log("   ↪️ 대기 페이지 감지! 진짜 주소 추적 중...")
             
-            # 1. Meta Refresh 태그에서 주소 찾기
             soup = BeautifulSoup(resp.text, 'html.parser')
             meta = soup.find("meta", attrs={"http-equiv": "refresh"})
             new_url = None
             
             if meta:
-                content = meta.get("content", "") # 예: "0;url=https://..."
+                content = meta.get("content", "")
                 match = re.search(r"url=([^;'\"]+)", content, re.IGNORECASE)
                 if match: new_url = match.group(1)
             
-            # 2. 없다면 자바스크립트 location.href 찾기
             if not new_url:
                 match = re.search(r"location\.href\s*=\s*['\"]([^'\"]+)['\"]", resp.text)
                 if match: new_url = match.group(1)
                 
-            # 3. 찾은 주소로 다시 접속
             if new_url:
-                print(f"   👉 진짜 목적지 발견: {new_url[:40]}...")
+                log(f"   👉 진짜 목적지 발견: {new_url[:40]}...")
                 resp = session.get(new_url, headers=headers, timeout=10)
 
-        # 최종 도착 URL 확인 및 인코딩 보정
         final_url = resp.url
-        print(f"   ✅ 최종 접속: {final_url[:30]}...")
+        log(f"   ✅ 최종 접속: {final_url[:30]}...")
         
         if "ppomppu.co.kr" in final_url:
             resp.encoding = 'cp949'
@@ -124,7 +126,7 @@ def fetch_post_detail(url: str, content_selector: str) -> str:
         
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # 댓글 찾기 시도
+        # 댓글 찾기
         extracted_text = []
         selectors = [
             ".han-comment", ".comment_wrapper", "#quote", ".list_comment", 
@@ -139,9 +141,9 @@ def fetch_post_detail(url: str, content_selector: str) -> str:
                     t = el.get_text(strip=True)
                     if t: extracted_text.append(f"- {t}")
         
-        # 댓글 없으면 본문 전체 요약
+        # 댓글 없으면 본문
         if not extracted_text:
-            print("   ⚠️ 댓글 영역 없음 -> 본문 전체 수집")
+            log("   ⚠️ 댓글 영역 없음 -> 본문 전체 수집")
             for s in soup(["script", "style", "iframe", "header", "footer", "nav"]):
                 s.extract()
             full_text = soup.get_text(separator="\n", strip=True)
