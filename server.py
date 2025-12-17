@@ -12,7 +12,6 @@ mcp = FastMCP("OmniAnalyst")
 
 @mcp.tool()
 def fetch_board_items(env_name: str) -> str:
-    """알구몬 리스트 수집"""
     print(f"🔍 [알구몬] 1페이지 스캔 시작...")
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -27,7 +26,7 @@ def fetch_board_items(env_name: str) -> str:
         
         products = soup.select(".product-body")
         
-        for post in products[:30]: # 상위 30개까지 확인
+        for post in products[:30]: 
             try:
                 item = {
                     "site": "알구몬",
@@ -38,21 +37,18 @@ def fetch_board_items(env_name: str) -> str:
                     "content_selector": "AUTO"
                 }
 
-                # 제목 & 링크
                 title_tag = post.select_one(".deal-title .item-name a")
                 if title_tag:
                     item["title"] = title_tag.get_text(strip=True)
                     item["link"] = urljoin(ALGUMON_URL, title_tag.get('href'))
                 else: continue
 
-                # 댓글 수
                 comment_icon = post.select_one(".icon-commenting-o")
                 if comment_icon:
                     cmt_text = comment_icon.parent.get_text(strip=True)
                     nums = re.findall(r'\d+', cmt_text)
                     if nums: item["comments"] = int(nums[0])
 
-                # 날짜 정제
                 raw_text = ""
                 date_tag = post.select_one(".created-at")
                 if date_tag: raw_text = date_tag.get_text(strip=True)
@@ -75,7 +71,7 @@ def fetch_board_items(env_name: str) -> str:
                 all_items.append(item)
             except: continue
 
-        print(f"✅ 리스트 확보: {len(all_items)}개 (필터링 전)")
+        print(f"✅ 리스트 확보: {len(all_items)}개")
         return json.dumps(all_items, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": f"알구몬 접속 실패: {e}"}, ensure_ascii=False)
@@ -83,19 +79,18 @@ def fetch_board_items(env_name: str) -> str:
 
 @mcp.tool()
 def fetch_post_detail(url: str, content_selector: str) -> str:
-    """사이트별 댓글 수집 (실패 시 본문 전체 긁어오기 모드)"""
+    """사이트 내용 수집 (강력한 폴백 적용)"""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Referer': 'https://algumon.com/'
         }
         
-        # 1. 접속
         resp = requests.get(url, headers=headers, timeout=10)
         final_url = resp.url
         print(f"   👉 접속: {final_url[:40]}...")
 
-        # 2. 인코딩 보정 (뽐뿌 깨짐 방지)
+        # 인코딩 보정
         if "ppomppu.co.kr" in final_url:
             resp.encoding = 'cp949'
         else:
@@ -103,40 +98,36 @@ def fetch_post_detail(url: str, content_selector: str) -> str:
         
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # 3. 댓글 찾기 시도 (주요 사이트 패턴)
-        comments = []
+        # 1. 댓글 전용 구역 시도
         selectors = [
             ".han-comment", ".comment_wrapper", "#quote", ".list_comment", # 뽐뿌
-            ".comment-content", ".comment_view", ".xe_content", # 퀘이사/루리웹/펨코
-            ".reply", ".review", ".comment", ".list-group-item" # 기타
+            ".comment-content", ".comment_view", ".xe_content", # 퀘이사/루리웹
+            ".reply", ".review", ".comment", ".list-group-item" 
         ]
         
         extracted_text = []
-        
-        # 우선순위: 선택자로 찾기
         for sel in selectors:
             found = soup.select(sel)
             if found:
                 for el in found:
                     t = el.get_text(strip=True)
-                    if t: extracted_text.append(f"- {t}")
+                    extracted_text.append(f"- {t}")
         
-        # 4. 🔥 [핵심] 댓글 못 찾았으면? -> 페이지 전체 텍스트 긁기 (Nuclear Option)
+        # 2. 댓글이 없으면? -> 페이지 전체 텍스트 긁어서 반환 (절대 실패 없음)
         if not extracted_text:
-            print("   ⚠️ 댓글 영역 못 찾음 -> 본문 전체 요약 시도")
-            # 스크립트, 스타일 제거
-            for script in soup(["script", "style", "header", "footer", "nav", "iframe"]):
-                script.extract()
+            print("   ⚠️ 댓글 선택 실패 -> 페이지 전체 텍스트 수집")
             
-            # 본문 텍스트만 추출 (최대 3000자)
+            # 스크립트 제거
+            for s in soup(["script", "style", "iframe", "header", "footer", "nav"]):
+                s.extract()
+                
             full_text = soup.get_text(separator="\n", strip=True)
-            # 연속된 공백 제거
+            # 텍스트 정리
             full_text = re.sub(r'\n+', '\n', full_text)
             
-            return f"[구조 인식 실패, 전체 텍스트 분석]\n{full_text[:3500]}"
+            return f"[전체 페이지 내용]\n{full_text[:4000]}" # 4000자 제한
 
-        # 댓글을 찾았으면 그거 반환
-        return f"[댓글 수집 성공]\n" + "\n".join(extracted_text[:50]) # 최대 50개만
+        return f"[댓글 수집 성공]\n" + "\n".join(extracted_text[:50])
 
     except Exception as e:
         return f"접속 실패: {e}"
