@@ -86,11 +86,17 @@ async def main():
 
                             for item in items:
                                 title = item.get("title", "")
-                                link = item.get("link", "")
+                                raw_link = item.get("link", "")
+                                
+                                # 🔥 [핵심 수정] 링크 꼬리 자르기 (중복 방지)
+                                # 예: .../d/1234?v=xyz -> .../d/1234
+                                clean_link = raw_link.split('?')[0]
+                                
                                 comments = item.get("comments", 0)
                                 date_text = item.get("date_text", "")
                                 
-                                if link in seen_links: continue
+                                # 이미 본 글(꼬리 뗀 주소 기준)이면 스킵
+                                if clean_link in seen_links: continue
 
                                 is_today = False
                                 if any(x in date_text for x in ["방금", "분", "시간", "초"]): is_today = True
@@ -106,12 +112,12 @@ async def main():
                                 if is_hit:
                                     print(f"  🔍 분석 중: {title} (💬{comments})")
                                     
-                                    detail = await session.call_tool("fetch_post_detail", arguments={"url": link, "content_selector": "AUTO"})
+                                    # 상세 분석에는 접속을 위해 원본(raw_link) 사용
+                                    detail = await session.call_tool("fetch_post_detail", arguments={"url": raw_link, "content_selector": "AUTO"})
                                     body_text = detail.content[0].text
 
-                                    # 🔥 [핵심 수정] 프롬프트를 더 유연하게 변경
                                     prompt = f"""
-                                    너는 핫딜 판독기야. 아래 텍스트는 게시글의 내용이야 (댓글이 포함되어 있을 수도 있고, 본문만 있을 수도 있어).
+                                    너는 핫딜 판독기야. 아래 텍스트는 게시글의 내용이야.
                                     이 내용을 읽고 사람들이 좋아하는 '핫딜'인지 판단해.
 
                                     [분석 대상 텍스트]
@@ -120,7 +126,7 @@ async def main():
                                     [판단 기준]
                                     1. 긍정적 단어('싸다', '탑승', '구매완료', '좋네요', '감사')가 보이거나 가격 메리트가 있어 보이면 POSITIVE.
                                     2. 부정적 단어('비싸다', '별로', '품절', '바이럴')가 보이면 NEGATIVE.
-                                    3. 명확한 댓글이 없더라도 가격이나 구성이 좋아 보이면 POSITIVE로 판단해도 됨.
+                                    3. 뚜렷한 반응이 없어도 구성/가격이 좋아 보이면 POSITIVE.
                                     4. 도저히 판단 불가일 때만 UNKNOWN.
                                     
                                     답변(JSON): {{"judgment": "POSITIVE/NEGATIVE/UNKNOWN", "reason": "한줄요약"}}
@@ -132,7 +138,8 @@ async def main():
                                         ai_json = json.loads(raw_json)
                                         
                                         if ai_json["judgment"] == "POSITIVE":
-                                            msg = f"🔥 [핫딜/💬{comments}개]\n제목: {title}\n이유: {ai_json['reason']}\n링크: {link}"
+                                            # 알림 보낼 때는 깔끔한 clean_link 사용
+                                            msg = f"🔥 [핫딜/💬{comments}개]\n제목: {title}\n이유: {ai_json['reason']}\n링크: {clean_link}"
                                             send_telegram(msg)
                                             print("  ✅ 알림 전송!")
                                         elif ai_json["judgment"] == "UNKNOWN":
@@ -140,10 +147,11 @@ async def main():
                                         else:
                                             print(f"  ⛔ 탈락: {ai_json['reason']}")
                                     except:
-                                        # 에러 나면 일단 알림 보내보는 전략
-                                        send_telegram(f"⚠️ [분석에러/💬{comments}] {title}\n{link}")
+                                        send_telegram(f"⚠️ [분석에러/💬{comments}] {title}\n{clean_link}")
 
-                                    seen_links.add(link)
+                                    # 본 목록에 추가 (꼬리 뗀 주소)
+                                    seen_links.add(clean_link)
+                            
                             time.sleep(interval)
 
                     except KeyboardInterrupt:
