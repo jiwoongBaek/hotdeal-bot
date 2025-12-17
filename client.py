@@ -1,4 +1,3 @@
-# 파일경로: /home/baek828/hotdeal-bot/client.py
 import asyncio
 import os
 import time
@@ -10,13 +9,11 @@ from mcp.client.stdio import stdio_client
 import google.generativeai as genai
 from google.generativeai.types import Tool, FunctionDeclaration
 
-# --- 🔐 환경 변수 ---
 API_KEY = os.getenv("GEMINI_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-if not API_KEY:
-    print("❌ 경고: GEMINI_API_KEY가 없습니다.")
+if not API_KEY: print("❌ GEMINI_API_KEY 없음")
 
 genai.configure(api_key=API_KEY)
 MODEL_NAME = 'models/gemini-2.5-flash' 
@@ -35,7 +32,7 @@ async def main():
         env=None
     )
 
-    print(f"🔌 Omni-Analyst 연결 중... (모델: {MODEL_NAME})")
+    print(f"🔌 연결 중... (모델: {MODEL_NAME})")
 
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -95,7 +92,6 @@ async def main():
                                 
                                 if link in seen_links: continue
 
-                                # 날짜 필터
                                 is_today = False
                                 if any(x in date_text for x in ["방금", "분", "시간", "초"]): is_today = True
                                 elif ":" in date_text or today_str in date_text: is_today = True
@@ -103,7 +99,6 @@ async def main():
 
                                 if not is_today: continue 
 
-                                # 조건 필터
                                 is_hit = False
                                 if keyword != "all" and keyword in title: is_hit = True
                                 if comments >= min_comments: is_hit = True
@@ -111,20 +106,22 @@ async def main():
                                 if is_hit:
                                     print(f"  🔍 분석 중: {title} (💬{comments})")
                                     
-                                    # 상세 분석
                                     detail = await session.call_tool("fetch_post_detail", arguments={"url": link, "content_selector": "AUTO"})
-                                    comments_body = detail.content[0].text
+                                    body_text = detail.content[0].text
 
+                                    # 🔥 [핵심 수정] 프롬프트를 더 유연하게 변경
                                     prompt = f"""
-                                    너는 핫딜 판독기야. 아래 내용을 보고 살 만한 딜인지 판단해.
-                                    댓글이 없으면 '판단불가'라고 해.
+                                    너는 핫딜 판독기야. 아래 텍스트는 게시글의 내용이야 (댓글이 포함되어 있을 수도 있고, 본문만 있을 수도 있어).
+                                    이 내용을 읽고 사람들이 좋아하는 '핫딜'인지 판단해.
 
-                                    [수집된 내용]
-                                    {comments_body}
+                                    [분석 대상 텍스트]
+                                    {body_text[:4000]}
                                     
-                                    [판단기준]
-                                    - POSITIVE: 가격 저렴, 구매 완료, 칭찬, '탑승' 등 긍정적 반응
-                                    - NEGATIVE: 비쌈, 품절, 별로임, 바이럴 등 부정적 반응
+                                    [판단 기준]
+                                    1. 긍정적 단어('싸다', '탑승', '구매완료', '좋네요', '감사')가 보이거나 가격 메리트가 있어 보이면 POSITIVE.
+                                    2. 부정적 단어('비싸다', '별로', '품절', '바이럴')가 보이면 NEGATIVE.
+                                    3. 명확한 댓글이 없더라도 가격이나 구성이 좋아 보이면 POSITIVE로 판단해도 됨.
+                                    4. 도저히 판단 불가일 때만 UNKNOWN.
                                     
                                     답변(JSON): {{"judgment": "POSITIVE/NEGATIVE/UNKNOWN", "reason": "한줄요약"}}
                                     """
@@ -135,7 +132,7 @@ async def main():
                                         ai_json = json.loads(raw_json)
                                         
                                         if ai_json["judgment"] == "POSITIVE":
-                                            msg = f"🔥 [핫딜/💬{comments}개]\n제목: {title}\n반응: {ai_json['reason']}\n링크: {link}"
+                                            msg = f"🔥 [핫딜/💬{comments}개]\n제목: {title}\n이유: {ai_json['reason']}\n링크: {link}"
                                             send_telegram(msg)
                                             print("  ✅ 알림 전송!")
                                         elif ai_json["judgment"] == "UNKNOWN":
@@ -143,7 +140,8 @@ async def main():
                                         else:
                                             print(f"  ⛔ 탈락: {ai_json['reason']}")
                                     except:
-                                        send_telegram(f"⚠️ [분석실패/💬{comments}] {title}\n{link}")
+                                        # 에러 나면 일단 알림 보내보는 전략
+                                        send_telegram(f"⚠️ [분석에러/💬{comments}] {title}\n{link}")
 
                                     seen_links.add(link)
                             time.sleep(interval)
