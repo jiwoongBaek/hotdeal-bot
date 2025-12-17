@@ -94,7 +94,7 @@ async def main():
                             if isinstance(items, dict) and "error" in items:
                                 print(f"❌ {items['error']}"); break
 
-                            # 오늘 날짜 문자열 (예: 11/26)
+                            # 오늘 날짜 문자열 (예: 12/17)
                             today_str = datetime.now().strftime("%m/%d")
 
                             for item in items:
@@ -107,12 +107,14 @@ async def main():
                                 
                                 if link in seen_links: continue
 
-                                # 1. 📅 날짜 필터 (오늘 글인가?)
+                                # 1. 📅 날짜 필터 (알구몬 '방금', '분 전' 등 지원)
                                 is_today = False
-                                # 시간이 적혀있으면(:) 오늘 글임. 혹은 오늘 날짜가 포함되어 있으면 통과.
-                                if ":" in date_text or today_str in date_text:
+                                if any(x in date_text for x in ["방금", "분 전", "시간 전", "초 전"]):
                                     is_today = True
-                                if not date_text: is_today = True # 날짜 없으면 안전하게 통과
+                                elif ":" in date_text or today_str in date_text:
+                                    is_today = True
+                                elif not date_text: 
+                                    is_today = True # 날짜 없으면 안전하게 통과
 
                                 if not is_today: continue 
 
@@ -151,6 +153,7 @@ async def main():
                                         else:
                                             print(f"  ⛔ 탈락: {ai_json['reason']}")
                                     except:
+                                        # JSON 파싱 실패해도 알림은 일단 보냄
                                         send_telegram(f"⚠️ [분석실패/💬{comments}] {title}\n{link}")
 
                                     seen_links.add(link)
