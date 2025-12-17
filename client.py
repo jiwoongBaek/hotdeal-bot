@@ -1,3 +1,4 @@
+# 파일경로: /home/baek828/hotdeal-bot/client.py
 import asyncio
 import os
 import time
@@ -52,8 +53,7 @@ async def main():
             model = genai.GenerativeModel(model_name=MODEL_NAME, tools=gemini_tools)
             chat = model.start_chat(enable_automatic_function_calling=False)
 
-            print("\n✅ 준비 완료! 이제 'monitor' 뒤에 환경 이름 없이 바로 입력하세요.")
-            print("예) monitor all 5 60  (키워드 'all', 댓글 5개 이상, 60초 간격)")
+            print("\n✅ 준비 완료! (예: monitor all 5 60)")
 
             while True:
                 user_input = input("🗣️ 나: ")
@@ -63,7 +63,6 @@ async def main():
                 if user_input.startswith("monitor"):
                     try:
                         parts = user_input.split()
-                        # [변경점] parts[1]이 바로 키워드가 됩니다. (환경 이름 삭제)
                         if len(parts) < 4:
                             print("⚠️ 형식: monitor [키워드] [댓글수] [초단위간격]")
                             continue
@@ -72,12 +71,11 @@ async def main():
                         min_comments = int(parts[2])
                         interval = int(parts[3])
                         
-                        print(f"🕵️‍♂️ [AI 감시] '{keyword}' OR 댓글 {min_comments}개+ (오늘 게시글만)")
+                        print(f"🕵️‍♂️ [AI 감시] '{keyword}' OR 댓글 {min_comments}개+")
                         seen_links = set()
 
                         while True:
                             print(f"\n⏰ 스캔 중... ({time.strftime('%H:%M:%S')})")
-                            # fetch_board_items 호출 시 env_name은 더미값('algumon') 전달
                             res = await session.call_tool("fetch_board_items", arguments={"env_name": "algumon"})
                             try:
                                 items = json.loads(res.content[0].text)
@@ -93,9 +91,7 @@ async def main():
                                 title = item.get("title", "")
                                 link = item.get("link", "")
                                 comments = item.get("comments", 0)
-                                site = item.get("site", "")
                                 date_text = item.get("date_text", "")
-                                content_sel = item.get("content_selector", "")
                                 
                                 if link in seen_links: continue
 
@@ -113,10 +109,10 @@ async def main():
                                 if comments >= min_comments: is_hit = True
 
                                 if is_hit:
-                                    print(f"  🔍 분석 중: {title} (💬{comments}/📅{date_text})")
+                                    print(f"  🔍 분석 중: {title} (💬{comments})")
                                     
                                     # 상세 분석
-                                    detail = await session.call_tool("fetch_post_detail", arguments={"url": link, "content_selector": content_sel})
+                                    detail = await session.call_tool("fetch_post_detail", arguments={"url": link, "content_selector": "AUTO"})
                                     comments_body = detail.content[0].text
 
                                     prompt = f"""
@@ -129,14 +125,12 @@ async def main():
                                     [판단기준]
                                     - POSITIVE: 가격 저렴, 구매 완료, 칭찬, '탑승' 등 긍정적 반응
                                     - NEGATIVE: 비쌈, 품절, 별로임, 바이럴 등 부정적 반응
-                                    - UNKNOWN: 댓글이나 정보가 부족함
                                     
                                     답변(JSON): {{"judgment": "POSITIVE/NEGATIVE/UNKNOWN", "reason": "한줄요약"}}
                                     """
                                     
                                     try:
                                         ai_res = chat.send_message(prompt)
-                                        # JSON 파싱 강화
                                         raw_json = ai_res.text.replace("```json","").replace("```","").strip()
                                         ai_json = json.loads(raw_json)
                                         
