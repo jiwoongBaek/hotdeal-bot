@@ -15,7 +15,7 @@ mcp = FastMCP("OmniAnalyst")
 
 def init_db():
     os.makedirs("/data", exist_ok=True)
-    # DB 관련 코드는 에러 방지용으로 남겨둡니다.
+    # DB 관련 코드는 호환성을 위해 유지
     conn = sqlite3.connect(DB_PATH)
     conn.execute('CREATE TABLE IF NOT EXISTS environments (name TEXT PRIMARY KEY, description TEXT)')
     conn.execute('CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY, env_name TEXT, site_name TEXT)')
@@ -33,7 +33,7 @@ def add_board_to_env(env_name: str, site_name: str, board_url: str, title_select
 
 @mcp.tool()
 def fetch_board_items(env_name: str) -> str:
-    """알구몬 전용 파서 (날짜 자동 변환 기능 포함)"""
+    """알구몬 전용 파서 (날짜 정제 기능 강화)"""
     print(f"🔍 [알구몬] 데이터 수집 시작...")
     
     headers = {
@@ -47,10 +47,10 @@ def fetch_board_items(env_name: str) -> str:
         all_items = []
         today_str = datetime.now().strftime("%m/%d") # 예: "12/17"
         
-        # .product-body 클래스를 가진 모든 요소를 찾음 (가장 확실한 방법)
+        # .product-body 클래스를 가진 모든 요소 스캔
         products = soup.select(".product-body")
         
-        for post in products[:25]:
+        for post in products[:25]: # 상위 25개만
             try:
                 item = {
                     "site": "알구몬",
@@ -77,24 +77,36 @@ def fetch_board_items(env_name: str) -> str:
                     if nums:
                         item["comments"] = int(nums[0])
 
-                # 3. 날짜 (여기가 핵심!)
-                # "22분 전" 같은 텍스트 찾기
+                # 3. 날짜 (여기가 핵심 개선 포인트!)
+                raw_text = ""
+                
+                # (A) .created-at 태그가 있으면 최우선
                 date_tag = post.select_one(".created-at")
-                raw_date = ""
                 if date_tag:
-                    raw_date = date_tag.get_text(strip=True)
+                    raw_text = date_tag.get_text(strip=True)
                 else:
-                    # created-at이 없으면 메타 정보에서 찾기
+                    # (B) 없으면 메타 정보 전체에서 찾기
                     meta_tag = post.select_one(".deal-price-meta-info")
                     if meta_tag:
-                        raw_date = meta_tag.get_text(strip=True)
+                        raw_text = meta_tag.get_text(strip=True) # 여기에 배송비 등 잡동사니가 섞여 있음
 
-                # 🔥 [날짜 변환 마법]
-                # '전'이나 '방금'이 있으면 오늘 날짜를 강제로 붙여줌
-                if any(x in raw_date for x in ["방금", "분 전", "시간 전", "초 전"]):
-                    item["date_text"] = f"{today_str} ({raw_date})"
+                # 🔥 [날짜 정제 마법] 정규식으로 시간 패턴만 추출
+                # 예: "35분 전", "1시간 전", "방금", "12-17" 등을 찾음
+                clean_date = ""
+                time_match = re.search(r'(\d+분\s*전|\d+시간\s*전|방금|\d+초\s*전|\d{2}-\d{2}|\d{2}/\d{2})', raw_text)
+                
+                if time_match:
+                    clean_date = time_match.group(1)
                 else:
-                    item["date_text"] = raw_date
+                    # 정규식 실패 시, 텍스트의 맨 마지막 단어를 가져옴 (보통 날짜가 끝에 있음)
+                    parts = raw_text.split()
+                    if parts: clean_date = parts[-1]
+
+                # 최종 날짜 포맷팅
+                if any(x in clean_date for x in ["방금", "분", "시간", "초"]):
+                    item["date_text"] = f"{today_str} ({clean_date})"
+                else:
+                    item["date_text"] = clean_date
 
                 all_items.append(item)
 
@@ -114,7 +126,6 @@ def fetch_post_detail(url: str, content_selector: str) -> str:
         resp = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # 댓글 영역 긁기
         elements = soup.select(".post-content")
         if not elements:
             elements = soup.select(".comment-list")
