@@ -6,36 +6,34 @@ import json
 import os
 import re
 from urllib.parse import urljoin
+from datetime import datetime
 
-# 알구몬 주소 (고정)
+# 알구몬 주소
 ALGUMON_URL = "https://algumon.com"
-
 DB_PATH = "/data/config.db"
 mcp = FastMCP("OmniAnalyst")
 
-# --- 🛠️ 초기화 (DB는 에러 방지용으로 살려둠) ---
 def init_db():
     os.makedirs("/data", exist_ok=True)
+    # DB 관련 코드는 에러 방지용으로 남겨둡니다.
     conn = sqlite3.connect(DB_PATH)
     conn.execute('CREATE TABLE IF NOT EXISTS environments (name TEXT PRIMARY KEY, description TEXT)')
     conn.execute('CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY, env_name TEXT, site_name TEXT)')
-    conn.commit()
     conn.close()
 
 init_db()
 
 @mcp.tool()
 def create_environment(name: str, description: str = "") -> str:
-    return f"✅ 환경 '{name}' 설정됨 (알구몬 전용 모드)"
+    return "✅ 알구몬 전용 모드입니다."
 
 @mcp.tool()
 def add_board_to_env(env_name: str, site_name: str, board_url: str, title_selector: str, comment_selector: str, content_selector: str, date_selector: str, link_selector: str = "") -> str:
-    return "✅ (알구몬 전용 모드라 설정이 필요 없습니다. 바로 monitor 명령어를 쓰세요!)"
+    return "✅ 알구몬 전용 모드라 설정이 필요 없습니다."
 
-# --- 🔍 알구몬 전용 수집기 (핵심) ---
 @mcp.tool()
 def fetch_board_items(env_name: str) -> str:
-    """알구몬 핫딜 리스트를 전용 파서로 수집합니다."""
+    """알구몬 전용 파서 (날짜 자동 변환 기능 포함)"""
     print(f"🔍 [알구몬] 데이터 수집 시작...")
     
     headers = {
@@ -47,11 +45,12 @@ def fetch_board_items(env_name: str) -> str:
         soup = BeautifulSoup(resp.text, 'html.parser')
         
         all_items = []
+        today_str = datetime.now().strftime("%m/%d") # 예: "12/17"
         
-        # 1. 게시글 리스트 전체 가져오기 (li.post-item)
-        post_items = soup.select("li.post-item")
+        # .product-body 클래스를 가진 모든 요소를 찾음 (가장 확실한 방법)
+        products = soup.select(".product-body")
         
-        for post in post_items[:25]: # 상위 25개만
+        for post in products[:25]:
             try:
                 item = {
                     "site": "알구몬",
@@ -59,48 +58,50 @@ def fetch_board_items(env_name: str) -> str:
                     "comments": 0,
                     "link": "",
                     "date_text": "",
-                    "content_selector": ".post-content" # 본문(댓글) 긁어올 때 쓸 영역
+                    "content_selector": ".post-content"
                 }
 
-                # (1) 제목 & 링크 추출
-                # .deal-title 안에 있는 링크(a)가 진짜 제목임
+                # 1. 제목 & 링크
                 title_tag = post.select_one(".deal-title .item-name a")
                 if title_tag:
                     item["title"] = title_tag.get_text(strip=True)
                     item["link"] = urljoin(ALGUMON_URL, title_tag.get('href'))
-                
-                # 제목 없으면 스킵 (광고 등)
-                if not item["title"]: continue
+                else:
+                    continue
 
-                # (2) 댓글 수 추출
-                # .icon-commenting-o 아이콘을 가진 부모 요소(span)를 찾음
+                # 2. 댓글 수 (아이콘 옆 숫자 찾기)
                 comment_icon = post.select_one(".icon-commenting-o")
                 if comment_icon:
-                    # 아이콘 바로 옆의 숫자 텍스트 추출
                     cmt_text = comment_icon.parent.get_text(strip=True)
-                    # 숫자만 걸러내기
                     nums = re.findall(r'\d+', cmt_text)
                     if nums:
                         item["comments"] = int(nums[0])
 
-                # (3) 날짜/시간 추출
-                # "22분 전" 같은 텍스트가 있는 .created-at 또는 .deal-price-meta-info
+                # 3. 날짜 (여기가 핵심!)
+                # "22분 전" 같은 텍스트 찾기
                 date_tag = post.select_one(".created-at")
-                if not date_tag:
-                    # 없으면 메타 정보 전체에서 시간 찾기
+                raw_date = ""
+                if date_tag:
+                    raw_date = date_tag.get_text(strip=True)
+                else:
+                    # created-at이 없으면 메타 정보에서 찾기
                     meta_tag = post.select_one(".deal-price-meta-info")
                     if meta_tag:
-                        item["date_text"] = meta_tag.get_text(strip=True)
+                        raw_date = meta_tag.get_text(strip=True)
+
+                # 🔥 [날짜 변환 마법]
+                # '전'이나 '방금'이 있으면 오늘 날짜를 강제로 붙여줌
+                if any(x in raw_date for x in ["방금", "분 전", "시간 전", "초 전"]):
+                    item["date_text"] = f"{today_str} ({raw_date})"
                 else:
-                    item["date_text"] = date_tag.get_text(strip=True)
+                    item["date_text"] = raw_date
 
                 all_items.append(item)
 
             except Exception as e:
-                print(f"⚠️ 파싱 에러(개별): {e}")
                 continue
 
-        print(f"✅ 수집 완료: {len(all_items)}개 발견")
+        print(f"✅ 수집 완료: {len(all_items)}개 (알구몬)")
         return json.dumps(all_items, ensure_ascii=False)
 
     except Exception as e:
@@ -108,27 +109,21 @@ def fetch_board_items(env_name: str) -> str:
 
 @mcp.tool()
 def fetch_post_detail(url: str, content_selector: str) -> str:
-    """게시글 상세(댓글) 수집"""
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         resp = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # 알구몬 댓글 영역 (.post-content 또는 댓글 리스트)
-        content = ""
-        
-        # 본문/댓글 텍스트 긁기
-        elements = soup.select(".post-content") # 기본 본문
+        # 댓글 영역 긁기
+        elements = soup.select(".post-content")
         if not elements:
-            # 댓글 영역이 따로 있다면 여기 추가 (보통 알구몬은 post-content에 포함됨)
             elements = soup.select(".comment-list")
             
         content = "\n".join([f"- {el.get_text(strip=True)[:200]}" for el in elements])
-        
-        if not content: return "내용(댓글)을 찾을 수 없습니다."
+        if not content: return "내용 없음"
         return content[:3000]
     except Exception as e:
-        return f"수집 실패: {e}"
+        return f"실패: {e}"
 
 if __name__ == "__main__":
     mcp.run()
