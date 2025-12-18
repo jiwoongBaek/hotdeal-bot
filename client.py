@@ -15,9 +15,14 @@ API_KEY = os.getenv("GEMINI_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# --- 💾 영구 기억 저장소 설정 ---
-# 도커 볼륨(/data)에 저장하여 재부팅 후에도 기억 유지
-DATA_DIR = "/data"
+# --- 💾 영구 기억 저장소 설정 (수정됨) ---
+# 기존: "/data" -> 수정: 현재 폴더 안의 "data"
+DATA_DIR = os.path.join(os.getcwd(), "data")
+
+# 폴더가 없으면 만듭니다 (에러 방지)
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR, exist_ok=True)
+
 SEEN_FILE = os.path.join(DATA_DIR, "seen_links.json")
 
 if not API_KEY:
@@ -43,7 +48,7 @@ def load_seen_links():
     try:
         with open(SEEN_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            return set(data) # 리스트를 집합(set)으로 변환
+            return set(data)
     except Exception as e:
         print(f"⚠️ 기억 불러오기 실패: {e}")
         return set()
@@ -51,17 +56,18 @@ def load_seen_links():
 def save_seen_link(link):
     """새로운 링크를 파일에 추가합니다."""
     try:
-        # 1. 기존 데이터 로드
+        # 혹시 모르니 저장 전에도 폴더 확인
+        if not os.path.exists(DATA_DIR):
+            os.makedirs(DATA_DIR, exist_ok=True)
+            
         current_links = load_seen_links()
         current_links.add(link)
         
-        # 2. 너무 많이 쌓이면 오래된 것 삭제 (최근 2000개만 유지)
-        # (알구몬 글 리젠 속도 고려 시 2000개면 며칠 분량)
         links_list = list(current_links)
+        # 너무 많이 쌓이면 2000개만 유지
         if len(links_list) > 2000:
             links_list = links_list[-2000:]
             
-        # 3. 저장
         with open(SEEN_FILE, "w", encoding="utf-8") as f:
             json.dump(links_list, f, ensure_ascii=False)
             
@@ -96,7 +102,6 @@ async def main():
 
             print("\n✅ 준비 완료! (예: monitor all 5 60)")
             
-            # 시작할 때 기억 불러오기
             seen_links = load_seen_links()
             print(f"🧠 기억 복원 완료: {len(seen_links)}개의 과거 핫딜을 알고 있습니다.")
 
@@ -118,7 +123,6 @@ async def main():
                         
                         print(f"🕵️‍♂️ [AI 감시] '{keyword}' OR 댓글 {min_comments}개+")
                         
-                        # 감시 시작 전 한 번 더 최신 상태 로드
                         seen_links = load_seen_links()
 
                         while True:
@@ -139,17 +143,12 @@ async def main():
                             for item in items:
                                 title = item.get("title", "")
                                 raw_link = item.get("link", "")
-                                
-                                # 링크 꼬리 자르기 (?v=... 제거)
                                 clean_link = raw_link.split('?')[0]
-                                
                                 comments = item.get("comments", 0)
                                 date_text = item.get("date_text", "")
                                 
-                                # 🔥 이미 파일에 저장된 링크면 절대 통과 금지
                                 if clean_link in seen_links: continue
 
-                                # 날짜 필터
                                 is_today = False
                                 if any(x in date_text for x in ["방금", "분", "시간", "초"]): is_today = True
                                 elif ":" in date_text or today_str in date_text: is_today = True
@@ -157,7 +156,6 @@ async def main():
 
                                 if not is_today: continue 
 
-                                # 조건 필터
                                 is_hit = False
                                 if keyword == "all" or keyword in title:
                                     if comments >= min_comments: is_hit = True
@@ -200,7 +198,6 @@ async def main():
                                         send_telegram(f"⚠️ [분석에러/💬{comments}] {title}\n{clean_link}")
                                         print(f"  ⚠️ AI 에러: {e}")
 
-                                    # 🔥 [중요] 분석 시도한 링크는 파일에 즉시 기록 (성공이든 실패든 다시 안 봄)
                                     seen_links.add(clean_link)
                                     save_seen_link(clean_link)
                             
@@ -220,7 +217,7 @@ async def main():
                 except: pass
 
 if __name__ == "__main__":
-    start_msg = f"🟢 [봇 시작] 시스템 가동 (재시작됨)\n시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    start_msg = f"🟢 [봇 시작] 시스템 가동 (경로 수정됨)\n시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     send_telegram(start_msg)
 
     try:
