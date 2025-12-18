@@ -3,22 +3,20 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import re
-import sys 
 from urllib.parse import urljoin
 from datetime import datetime
 
+# 알구몬 주소
 ALGUMON_URL = "https://algumon.com"
 mcp = FastMCP("OmniAnalyst")
 
-# 🔍 로그 전용 함수 (통신 방해 안 함)
-def log(msg):
-    sys.stderr.write(f"{msg}\n")
-    sys.stderr.flush()
+# 🔇 로그 함수 삭제: 이제 서버는 아무런 출력도 하지 않습니다. (에러 방지)
 
 @mcp.tool()
 def fetch_board_items(env_name: str) -> str:
     """알구몬 리스트 수집"""
-    log(f"🔍 [알구몬] 리스트 스캔 시작...")
+    # log("스캔 시작") -> 삭제됨
+    
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
@@ -77,7 +75,7 @@ def fetch_board_items(env_name: str) -> str:
                 all_items.append(item)
             except: continue
 
-        log(f"✅ 리스트 확보: {len(all_items)}개")
+        # log("확보 완료") -> 삭제됨
         return json.dumps(all_items, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": f"알구몬 접속 실패: {e}"}, ensure_ascii=False)
@@ -97,7 +95,7 @@ def fetch_post_detail(url: str, content_selector: str) -> str:
         
         # 리다이렉트 감지
         if "이동중" in resp.text or "redirect" in resp.url or "refresh" in resp.text.lower():
-            log("   ↪️ 대기 페이지 감지! 진짜 주소 추적 중...")
+            # log("대기 페이지 감지") -> 삭제됨
             
             soup = BeautifulSoup(resp.text, 'html.parser')
             meta = soup.find("meta", attrs={"http-equiv": "refresh"})
@@ -113,11 +111,10 @@ def fetch_post_detail(url: str, content_selector: str) -> str:
                 if match: new_url = match.group(1)
                 
             if new_url:
-                log(f"   👉 진짜 목적지 발견: {new_url[:40]}...")
                 resp = session.get(new_url, headers=headers, timeout=10)
 
         final_url = resp.url
-        log(f"   ✅ 최종 접속: {final_url[:30]}...")
+        # log(f"최종 접속: {final_url}") -> 삭제됨
         
         if "ppomppu.co.kr" in final_url:
             resp.encoding = 'cp949'
@@ -143,7 +140,7 @@ def fetch_post_detail(url: str, content_selector: str) -> str:
         
         # 댓글 없으면 본문
         if not extracted_text:
-            log("   ⚠️ 댓글 영역 없음 -> 본문 전체 수집")
+            # log("댓글 없음, 본문 수집") -> 삭제됨
             for s in soup(["script", "style", "iframe", "header", "footer", "nav"]):
                 s.extract()
             full_text = soup.get_text(separator="\n", strip=True)
