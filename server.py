@@ -1,5 +1,5 @@
 from mcp.server.fastmcp import FastMCP
-from curl_cffi import requests # 🔥 강력한 requests
+from curl_cffi import requests # 강력한 requests
 from bs4 import BeautifulSoup
 import json
 import re
@@ -16,37 +16,35 @@ def log(msg):
 
 @mcp.tool()
 def fetch_board_items(env_name: str) -> str:
-    """알구몬 리스트 수집 (순정 크롬 위장)"""
-    log(f"--- 스캔 시작: {datetime.now().strftime('%H:%M:%S')} ---")
+    """알구몬 리스트 수집 (아이폰/사파리 위장)"""
+    log(f"--- 사파리 스캔 시작: {datetime.now().strftime('%H:%M:%S')} ---")
     
     try:
-        # 🔥 헤더를 최소화하고 라이브러리 자동 설정에 맡깁니다.
-        # User-Agent를 수동으로 넣으면 TLS지문과 불일치하여 차단당합니다.
+        # 🔥 전략 변경: 크롬 대신 'safari15_5' 사용 (아이폰인 척)
         resp = requests.get(
             ALGUMON_URL, 
-            impersonate="chrome120",  # 최신 크롬(v120)으로 완벽 빙의
+            impersonate="safari15_5", 
             timeout=20
         )
         
-        log(f"웹사이트 접속 상태코드: {resp.status_code}") 
+        log(f"상태코드: {resp.status_code}") 
 
-        if resp.status_code != 200:
-            log(f"⚠️ 여전히 차단됨! (Code: {resp.status_code})")
-            # 403이면 내용을 살짝 봅니다 (혹시 캡차인지 확인)
-            if resp.status_code == 403:
-                log(f"차단 페이지 내용 일부: {resp.text[:100]}")
-            return json.dumps({"error": f"차단됨 (HTTP {resp.status_code})"}, ensure_ascii=False)
-
+        # 403이어도 바로 포기하지 않고, 진짜 내용이 있는지 확인합니다.
         soup = BeautifulSoup(resp.text, 'html.parser')
         products = soup.select(".product-body")
+        
         log(f"확보한 게시글 수: {len(products)}개")
 
+        # 게시글이 0개이면서 상태코드가 403이면 진짜 차단
         if len(products) == 0:
-            # 혹시 선택자가 바뀌었는지 확인하기 위해 전체 링크 수 체크
-            links = soup.select("a")
-            log(f"게시글 0개. (페이지 내 링크 총 {len(links)}개 발견)")
-            return json.dumps([], ensure_ascii=False)
+            if resp.status_code != 200:
+                log(f"⛔ 완전히 차단됨. HTML 일부: {resp.text[:200]}")
+                return json.dumps({"error": f"차단됨 (HTTP {resp.status_code})"}, ensure_ascii=False)
+            else:
+                log("⚠️ 접속은 됐는데 게시글이 없음 (구조 변경 의심)")
+                return json.dumps([], ensure_ascii=False)
 
+        # 여기까지 오면 403이든 뭐든 데이터는 가져온 것임!
         all_items = []
         today_str = datetime.now().strftime("%m/%d")
         
@@ -104,11 +102,11 @@ def fetch_board_items(env_name: str) -> str:
 
 @mcp.tool()
 def fetch_post_detail(url: str, content_selector: str) -> str:
-    """상세 내용 수집 (순정 크롬 위장)"""
+    """상세 내용 수집 (사파리 위장)"""
     try:
         session = requests.Session()
-        # 여기도 User-Agent 수동 설정 제거
-        resp = session.get(url, impersonate="chrome120", timeout=20)
+        # 상세 페이지도 사파리로 접속
+        resp = session.get(url, impersonate="safari15_5", timeout=20)
         
         if "이동중" in resp.text or "redirect" in resp.url or "refresh" in resp.text.lower():
             log("   ↪️ 대기 페이지 감지...")
@@ -123,7 +121,7 @@ def fetch_post_detail(url: str, content_selector: str) -> str:
                 match = re.search(r"location\.href\s*=\s*['\"]([^'\"]+)['\"]", resp.text)
                 if match: new_url = match.group(1)
             if new_url:
-                resp = session.get(new_url, impersonate="chrome120", timeout=20)
+                resp = session.get(new_url, impersonate="safari15_5", timeout=20)
 
         final_url = resp.url
         if "ppomppu.co.kr" in final_url: resp.encoding = 'cp949'
