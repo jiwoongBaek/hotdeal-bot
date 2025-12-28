@@ -1,5 +1,5 @@
 from mcp.server.fastmcp import FastMCP
-import requests
+from curl_cffi import requests # 🔥 일반 requests 대신 이걸 사용!
 from bs4 import BeautifulSoup
 import json
 import re
@@ -10,50 +10,36 @@ from datetime import datetime
 ALGUMON_URL = "https://algumon.com"
 mcp = FastMCP("OmniAnalyst")
 
-# 📢 로그 함수 (에러 파이프로 출력)
 def log(msg):
     sys.stderr.write(f"[DEBUG] {msg}\n")
     sys.stderr.flush()
 
 @mcp.tool()
 def fetch_board_items(env_name: str) -> str:
-    """알구몬 리스트 수집 (차단 우회 모드)"""
-    log(f"--- 스캔 시작: {datetime.now().strftime('%H:%M:%S')} ---")
+    """알구몬 리스트 수집 (TLS 위장 모드)"""
+    log(f"--- 스텔스 스캔 시작: {datetime.now().strftime('%H:%M:%S')} ---")
     
-    # 🔥 [핵심] 완벽한 브라우저 위장 (스텔스 헤더)
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Referer': 'https://www.google.com/', # 구글에서 온 척
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'cross-site',
-        'Sec-Fetch-User': '?1',
-        'Cache-Control': 'max-age=0',
-        'Connection': 'keep-alive'
-    }
-
     try:
-        # 세션을 사용해서 쿠키(Cookie)를 유지해야 차단을 덜 당함
-        session = requests.Session()
-        resp = session.get(ALGUMON_URL, headers=headers, timeout=15)
+        # 🔥 impersonate="chrome" 옵션이 핵심입니다.
+        # 이게 있으면 서버는 이 요청을 '진짜 크롬 브라우저'로 인식합니다.
+        resp = requests.get(
+            ALGUMON_URL, 
+            impersonate="chrome", 
+            timeout=15
+        )
         
-        log(f"웹사이트 접속 상태코드: {resp.status_code}") # 200이 나와야 성공
+        log(f"웹사이트 접속 상태코드: {resp.status_code}") 
 
         if resp.status_code != 200:
             log(f"⚠️ 여전히 차단됨! (Code: {resp.status_code})")
             return json.dumps({"error": f"차단됨 (HTTP {resp.status_code})"}, ensure_ascii=False)
 
         soup = BeautifulSoup(resp.text, 'html.parser')
-        
         products = soup.select(".product-body")
         log(f"확보한 게시글 수: {len(products)}개")
 
         if len(products) == 0:
-            log("⚠️ 차단은 뚫었으나 게시글을 못 찾았습니다. (구조 변경 의심)")
+            log("⚠️ 게시글 0개. (HTML 구조 변경 가능성)")
             return json.dumps([], ensure_ascii=False)
 
         all_items = []
@@ -74,8 +60,7 @@ def fetch_board_items(env_name: str) -> str:
                 if title_tag:
                     item["title"] = title_tag.get_text(strip=True)
                     item["link"] = urljoin(ALGUMON_URL, title_tag.get('href'))
-                else: 
-                    continue
+                else: continue
 
                 comment_icon = post.select_one(".icon-commenting-o")
                 if comment_icon:
@@ -114,19 +99,11 @@ def fetch_board_items(env_name: str) -> str:
 
 @mcp.tool()
 def fetch_post_detail(url: str, content_selector: str) -> str:
-    """상세 내용 수집 (스텔스 헤더 적용)"""
+    """상세 내용 수집 (TLS 위장 적용)"""
     try:
-        # 여기도 똑같이 강력한 헤더 적용
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Referer': 'https://algumon.com/', # 알구몬에서 타고 들어간 척
-            'Upgrade-Insecure-Requests': '1'
-        }
-        
+        # 여기도 똑같이 impersonate 적용
         session = requests.Session()
-        resp = session.get(url, headers=headers, timeout=15)
+        resp = session.get(url, impersonate="chrome", timeout=15)
         
         # 리다이렉트 추적
         if "이동중" in resp.text or "redirect" in resp.url or "refresh" in resp.text.lower():
@@ -142,7 +119,7 @@ def fetch_post_detail(url: str, content_selector: str) -> str:
                 match = re.search(r"location\.href\s*=\s*['\"]([^'\"]+)['\"]", resp.text)
                 if match: new_url = match.group(1)
             if new_url:
-                resp = session.get(new_url, headers=headers, timeout=15)
+                resp = session.get(new_url, impersonate="chrome", timeout=15)
 
         final_url = resp.url
         if "ppomppu.co.kr" in final_url: resp.encoding = 'cp949'
@@ -150,7 +127,6 @@ def fetch_post_detail(url: str, content_selector: str) -> str:
         
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # 댓글 찾기
         extracted_text = []
         selectors = [
             ".han-comment", ".comment_wrapper", "#quote", ".list_comment", 
